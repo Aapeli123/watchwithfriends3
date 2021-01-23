@@ -1,6 +1,6 @@
 package server
 
-import "github.com/go-gin/gin"
+import "github.com/gin-gonic/gin"
 
 func defineRoutes(r *gin.Engine) {
 	r.GET("/")

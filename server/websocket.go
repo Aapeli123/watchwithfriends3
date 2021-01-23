@@ -5,7 +5,7 @@ import (
 	"net/http"
 
 	"github.com/Aapeli123/watchwithfriends3/lib/session"
-	"github.com/go-gin/gin"
+	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
 
