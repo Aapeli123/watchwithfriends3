@@ -27,7 +27,10 @@ func Start(options Options) {
 
 	r := gin.Default()
 	c := cors.New(cors.Config{
-		AllowOriginFunc:  func(origin string) bool { return true },
+		AllowOrigins:     []string{"http://localhost:3000", "https://watchwithfriends.tk"},
+		AllowFiles:       false,
+		AllowWebSockets:  true,
+		AllowMethods:     []string{"GET"},
 		AllowAllOrigins:  false,
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
@@ -41,14 +44,6 @@ func Start(options Options) {
 	} else {
 		r.Run(options.Address)
 	}
-}
-
-func getReqSID(c *gin.Context) (string, error) {
-	sid, err := c.Request.Cookie("SID")
-	if err != nil {
-		return "", err
-	}
-	return sid.Value, nil
 }
 
 func alive(c *gin.Context) {

@@ -1,16 +1,17 @@
 package room
 
 import (
-	"context"
+	"errors"
 	"math/rand"
-
-	"github.com/Aapeli123/watchwithfriends3/lib/database"
-	"github.com/google/uuid"
 )
 
 // Needed for room code generation
 const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 const roomCodeLen = 4
+
+var ErrRoomNotFound = errors.New("Room not found")
+
+var Rooms = map[string]*Room{}
 
 func createRoomcode() string {
 	code := []byte{}
@@ -24,7 +25,6 @@ func createRoomcode() string {
 
 type Room struct {
 	RoomCode     string
-	RoomID       string
 	VideoPos     float64
 	VideoID      string
 	RoomName     string
@@ -36,64 +36,46 @@ type Room struct {
 
 func (r *Room) UpdateVideoTime(time float64) {
 	r.VideoPos = time
-	r.UpdateRoom()
 }
 
 func (r *Room) UpdateVideoLink(link string) {
 	r.VideoID = link
-	r.UpdateRoom()
 }
 
-func CreateRoom(roomName string, creator string) Room {
+func CreateRoom(roomName string, creator string) *Room {
 	room := Room{
-		RoomName: roomName,
 		VideoPos: 0,
 		VideoID:  "",
 		Leader:   creator,
 		Users:    []string{},
 		RoomCode: createRoomcode(),
-		RoomID:   uuid.New().String(),
 		Playing:  false,
 	}
-	database.Rooms().Doc(room.RoomID).Set(context.Background(), room)
-	return room
+	Rooms[room.RoomCode] = &room
+	return &room
 }
 
-func GetRoom(id string) (Room, error) {
-	snapshot, err := database.Rooms().Doc(id).Get(context.Background())
-	if err != nil {
-		return Room{}, err
+func GetRoom(code string) (*Room, error) {
+	if Rooms[code] == nil {
+		return nil, ErrRoomNotFound
 	}
-	r := Room{}
-	err = snapshot.DataTo(&r)
-	if err != nil {
-		return Room{}, err
-	}
-	return r, nil
+	return Rooms[code], nil
 }
-func GetRooms() ([]Room, error) {
-	snapshots, err := database.Rooms().Documents(context.Background()).GetAll()
-	if err != nil {
-		return nil, err
+func GetRooms() map[string]*Room {
+	return Rooms
+}
+func RoomArray() []*Room {
+	rooms := []*Room{}
+	for _, r := range Rooms {
+		rooms = append(rooms, r)
 	}
-	var rooms []Room
-	var room Room
-	for _, snapshot := range snapshots {
-		snapshot.DataTo(&room)
-		rooms = append(rooms, room)
-	}
-	return rooms, nil
+	return rooms
 }
 
 func (r *Room) SetPlaying(playing bool) {
 	r.Playing = playing
-	r.UpdateRoom()
 }
 
 func (r *Room) Delete() {
-	database.Rooms().Doc(r.RoomID).Delete(context.Background())
-}
-
-func (r *Room) UpdateRoom() {
-	database.Rooms().Doc(r.RoomID).Set(context.Background(), r)
+	delete(Rooms, r.RoomCode)
 }

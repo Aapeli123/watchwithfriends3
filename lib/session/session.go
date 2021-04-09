@@ -1,13 +1,16 @@
 package session
 
 import (
-	"context"
+	"errors"
 
-	"github.com/Aapeli123/watchwithfriends3/lib/database"
 	"github.com/Aapeli123/watchwithfriends3/lib/room"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
+
+var Sessions = map[string]*Session{}
+var ErrNotInRoom = errors.New("User not in room")
+var ErrAlreadyInRoom = errors.New("User is already in this room")
 
 type Session struct {
 	Username string
@@ -18,71 +21,95 @@ type Session struct {
 
 func (s *Session) SetUsername(un string) {
 	s.Username = un
-	database.Sessions().Doc(s.ID).Set(context.Background(), s)
 }
 
 func (s *Session) Delete() {
-	se, _ := GetSess(s.ID)
-	if se.InRoom != "" {
-		se.LeaveRoom(s.InRoom)
+	if s.InRoom != "" {
+		s.LeaveRoom(s.InRoom)
 	}
-	database.Sessions().Doc(se.ID).Delete(context.Background())
+	delete(Sessions, s.ID)
 }
 
-func AddSess() Session {
+func AddSess() *Session {
 	sess := Session{ID: uuid.New().String()}
-	database.Sessions().Doc(sess.ID).Set(context.Background(), sess)
+	Sessions[sess.ID] = &sess
+	return &sess
+}
+
+func GetSess(SID string) *Session {
+	sess := Sessions[SID]
 	return sess
 }
 
-func GetSess(SID string) (Session, error) {
-	snapshot, err := database.Sessions().Doc(SID).Get(context.Background())
-	if err != nil {
-		return Session{}, err
-	}
-	sess := Session{}
-	snapshot.DataTo(&sess)
-	return sess, nil
-}
-
 func ValidateSess(SID string) bool {
-	_, err := GetSess(SID)
-	if err != nil {
-		return false
-	}
 	return true
 }
 
-func (s *Session) JoinRoom(rID string) {
-	r, _ := room.GetRoom(rID)
-	r.Users = append(r.Users, s.ID)
-	r.UpdateRoom()
-	s.InRoom = r.RoomID
-	s.UpdateSession()
+func (s *Session) JoinRoom(rID string) error {
+	r, err := room.GetRoom(rID)
+	if err != nil {
+		return err
+	}
+	if r.RoomCode == s.InRoom {
+		return ErrAlreadyInRoom
+	}
 
+	r.Users = append(r.Users, s.ID)
+	s.InRoom = r.RoomCode
+	return nil
 }
 
 func (s *Session) SetWsConn(conn *websocket.Conn) {
 	s.wsConn = conn
 }
 
-func (s *Session) SetAsLeader() {
+func (s *Session) SetAsLeader() error {
 	type msg struct {
 		Operation string
 	}
 	if s.InRoom == "" {
-		return
+		return ErrNotInRoom
 	}
-	r, _ := room.GetRoom(s.InRoom)
+	r, err := room.GetRoom(s.InRoom)
+	if err != nil {
+		return err
+	}
 	r.Leader = s.ID
-	r.UpdateRoom()
-	s.UpdateSession()
 	s.wsConn.WriteJSON(msg{Operation: "leader"})
+	return nil
 }
 
-func (s *Session) LeaveRoom(rID string) {
-	r, _ := room.GetRoom(rID)
+func (s *Session) RecommendVideo(videoID string) error {
 
+	r, err := room.GetRoom(s.InRoom)
+	if err != nil {
+		return err
+	}
+	roomLeader := GetSess(r.Leader)
+	type VideoRecommendation struct {
+		Recommender string
+		VideoID     string
+	}
+	type msg struct {
+		Operation string
+		Data      interface{}
+	}
+	roomLeader.wsConn.WriteJSON(msg{
+		Operation: "recommendation",
+		Data: VideoRecommendation{
+			Recommender: s.Username,
+			VideoID:     videoID,
+		},
+	})
+	return nil
+}
+
+func (s *Session) LeaveRoom(rID string) error {
+
+	r, err := room.GetRoom(rID)
+	if err != nil {
+		return ErrNotInRoom
+	}
 	for i, id := range r.Users {
 		if id == s.ID {
 			r.Users = append(r.Users[:i], r.Users[i+1:]...)
@@ -91,23 +118,65 @@ func (s *Session) LeaveRoom(rID string) {
 	}
 
 	if len(r.Users) == 0 {
+		s.InRoom = ""
 		r.Delete()
-		return
+		return nil
 	}
 	if r.Leader == s.ID {
 		r.Leader = r.Users[0]
+		GetSess(r.Leader).SetAsLeader()
 	}
 	s.InRoom = ""
-	s.UpdateSession()
-	r.UpdateRoom()
-
+	type userData struct {
+		Username string
+		UserID   string
+	}
+	type roomData struct {
+		room.Room
+		Usernames []userData
+	}
+	type msg struct {
+		Operation string
+		Data      []userData
+	}
+	var rd roomData
+	for _, user := range r.Users {
+		s := GetSess(user)
+		rd.Usernames = append(rd.Usernames, userData{Username: s.Username, UserID: s.ID})
+	}
+	for _, u := range r.Users {
+		sess := GetSess(u)
+		sess.SendToClient(msg{Operation: "userDisconnected", Data: rd.Usernames})
+	}
+	return nil
 }
 
-func (s *Session) IsLeader(rID string) bool {
-	r, _ := room.GetRoom(rID)
-	return r.Leader == s.ID
+func (s *Session) IsLeader(rCode string) (bool, error) {
+	r, err := room.GetRoom(rCode)
+	if err != nil {
+		return false, ErrNotInRoom
+	}
+	return r.Leader == s.ID, nil
 }
 
-func (s *Session) UpdateSession() {
-	database.Sessions().Doc(s.ID).Set(context.Background(), s)
+func (s *Session) SendPlaybackState(play bool) {
+	type msg struct {
+		Operation string
+	}
+	if play {
+		s.wsConn.WriteJSON(msg{
+			Operation: "play",
+		})
+		return
+	}
+	s.wsConn.WriteJSON(msg{
+		Operation: "pause",
+	})
+}
+
+func (s *Session) SendToClient(msg interface{}) {
+	if s.wsConn == nil {
+		return
+	}
+	s.wsConn.WriteJSON(msg)
 }

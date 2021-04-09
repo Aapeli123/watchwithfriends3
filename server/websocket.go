@@ -34,63 +34,89 @@ type wsResponse struct {
 	Data      interface{}
 }
 
-func sync(rID string, wsConn *wsConnection, time float64) {
+func sync(wsConn *wsConnection, time float64) {
 	r, err := room.GetRoom(wsConn.Session.InRoom)
-	if wsConn.Session.IsLeader(rID) {
-		if err == nil {
-			r.UpdateVideoTime(time)
-		}
-	}
-
-	d, err := getRoomData(r)
 	if err != nil {
 		return
 	}
+	isLeader, err := wsConn.Session.IsLeader(r.RoomCode)
+	if err != nil {
+		return
+	}
+	if isLeader {
+		r.UpdateVideoTime(time)
+	}
 	wsConn.Conn.WriteJSON(wsResponse{
 		Operation: "sync",
-		Data:      d,
+		Data:      r.VideoPos,
 		Success:   true,
 	})
 
 }
 
-func changeRoomVideo(rID string, wsConn *wsConnection, vidLink string) {
+func changeRoomVideo(wsConn *wsConnection, vidLink string) {
 	r, err := room.GetRoom(wsConn.Session.InRoom)
-	if err == nil {
-		r.UpdateVideoLink(vidLink)
+	if err != nil {
+		return
 	}
+	r.UpdateVideoLink(vidLink)
+	sendToAllInRoom(r.RoomCode, wsResponse{
+		Operation: "change",
+		Data:      vidLink,
+	})
 }
 
 type roomData struct {
 	room.Room
-	Usernames []string
+	Usernames []userData
+}
+type userData struct {
+	Username string
+	UserID   string
 }
 
-func getRoomData(r room.Room) (roomData, error) {
+func getRoomData(r *room.Room) (roomData, error) {
 	data := roomData{
-		Room:      r,
-		Usernames: []string{},
+		Room:      *r,
+		Usernames: []userData{},
 	}
 	for _, u := range r.Users {
-		s, err := session.GetSess(u)
+		s := session.GetSess(u)
 		un := s.Username
-		if err != nil {
-			return roomData{}, err
-		}
-		data.Usernames = append(data.Usernames, un)
+		data.Usernames = append(data.Usernames, userData{
+			Username: un,
+			UserID:   s.ID,
+		})
 	}
 	return data, nil
 }
 
+func sendToAllInRoom(rID string, msg interface{}) {
+	room, err := room.GetRoom(rID)
+	if err != nil {
+		return
+	}
+	for _, u := range room.Users {
+		sess := session.GetSess(u)
+		sess.SendToClient(msg)
+	}
+}
+
 func joinRoom(rID string, wsConn *wsConnection) {
-	wsConn.Session.JoinRoom(rID)
+	err := wsConn.Session.JoinRoom(rID)
+	if err != nil {
+		wsConn.Conn.WriteJSON(wsResponse{
+			Operation: "join",
+			Success:   false,
+		})
+		return
+	}
 	r, err := room.GetRoom(rID)
 	if err != nil {
 		wsConn.Conn.WriteJSON(wsResponse{
 			Operation: "join",
 			Success:   false,
 		})
-		return
 	}
 	d, err := getRoomData(r)
 	if err != nil {
@@ -100,6 +126,10 @@ func joinRoom(rID string, wsConn *wsConnection) {
 		})
 		return
 	}
+	sendToAllInRoom(rID, wsResponse{
+		Operation: "userConnected",
+		Data:      d.Usernames,
+	})
 	wsConn.Conn.WriteJSON(wsResponse{
 		Operation: "join",
 		Success:   true,
@@ -112,8 +142,16 @@ func joinRoom(rID string, wsConn *wsConnection) {
 }
 func setRoomPlayback(rID string, wsConn *wsConnection, playing bool) {
 	r, err := room.GetRoom(wsConn.Session.InRoom)
-	if err == nil {
-		r.SetPlaying(playing)
+	if err != nil {
+		return
+	}
+	if r.Playing == playing {
+		return
+	}
+	r.SetPlaying(playing)
+	for _, user := range r.Users {
+		s := session.GetSess(user)
+		s.SendPlaybackState(playing)
 	}
 }
 
@@ -124,32 +162,59 @@ func handleMessage(msg wsMessage, wsConn wsConnection) {
 		wsConn.Conn.WriteJSON(wsResponse{
 			Operation: "setUn",
 			Success:   true,
+			Data:      msg.Data.Username,
 		})
 	case "create":
 		room := room.CreateRoom(msg.Data.Room, wsConn.Session.ID)
 		wsConn.Conn.WriteJSON(wsResponse{
 			Operation: "create",
 			Success:   true,
-			Data:      room.RoomID,
+			Data:      room.RoomCode,
 		})
-
+	case "rooms":
+		rooms := room.RoomArray()
+		wsConn.Conn.WriteJSON(wsResponse{
+			Operation: "rooms",
+			Success:   true,
+			Data:      rooms,
+		})
+		break
 	case "sync":
-		sync(msg.Data.Room, &wsConn, msg.Data.Time)
+		sync(&wsConn, msg.Data.Time)
 	case "change":
-		changeRoomVideo(msg.Data.Room, &wsConn, msg.Data.VideoLink)
+		changeRoomVideo(&wsConn, msg.Data.VideoLink)
 	case "join":
 		joinRoom(msg.Data.Room, &wsConn)
 	case "leave":
 		wsConn.Session.LeaveRoom(msg.Data.Room)
+		wsConn.Conn.WriteJSON(wsResponse{
+			Operation: "leave",
+			Success:   true,
+		})
+	case "uid":
+		wsConn.Conn.WriteJSON(wsResponse{
+			Operation: "uid",
+			Success:   true,
+			Data:      wsConn.Session.ID,
+		})
 	case "chat":
-		// TODO
+		type chatMsg struct {
+			Sender  string
+			Content string
+		}
+		s := wsConn.Session
+		sendToAllInRoom(s.InRoom, wsResponse{
+			Operation: "chat",
+			Data:      chatMsg{Sender: s.Username, Content: msg.Data.ChatMessage},
+		})
 	case "leader":
-		isLeader := wsConn.Session.IsLeader(msg.Data.Room)
+		isLeader, err := wsConn.Session.IsLeader(msg.Data.Room)
+		if err != nil {
+			break
+		}
 		if isLeader {
-			s, err := session.GetSess(msg.Data.UserID)
-			if err != nil {
-				s.SetAsLeader()
-			}
+			s := session.GetSess(msg.Data.UserID)
+			s.SetAsLeader()
 			wsConn.Conn.WriteJSON(wsResponse{
 				Operation: "leaderOff",
 			})
@@ -158,12 +223,19 @@ func handleMessage(msg wsMessage, wsConn wsConnection) {
 	case "hasUn":
 		wsConn.Conn.WriteJSON(wsResponse{
 			Operation: "hasUn",
-			Data:      wsConn.Session.Username != "",
+			Success:   wsConn.Session.Username != "",
+			Data:      wsConn.Session.Username,
 		})
+	case "recommendation":
+		wsConn.Session.RecommendVideo(msg.Data.VideoLink)
 	case "pause":
 		setRoomPlayback(msg.Data.Room, &wsConn, false)
 	case "play":
 		setRoomPlayback(msg.Data.Room, &wsConn, true)
+	case "ping":
+		wsConn.Conn.WriteJSON(wsResponse{
+			Operation: "pong",
+		})
 	}
 }
 
@@ -175,11 +247,12 @@ func handleWS(c *gin.Context) {
 	if err != nil {
 		fmt.Println("Connection upgrade failed...")
 	}
-	wsConn := wsConnection{Conn: conn, Session: &sess}
+	wsConn := wsConnection{Conn: conn, Session: sess}
 	msg := wsMessage{}
 	wsConn.Session.SetWsConn(conn)
 	for {
 		if wsConn.Conn.ReadJSON(&msg) != nil {
+			wsConn.Session.LeaveRoom(wsConn.Session.InRoom)
 			wsConn.Session.Delete()
 			break
 		}
