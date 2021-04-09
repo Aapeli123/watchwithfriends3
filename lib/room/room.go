@@ -44,6 +44,7 @@ func (r *Room) UpdateVideoLink(link string) {
 
 func CreateRoom(roomName string, creator string) *Room {
 	room := Room{
+		RoomName: roomName,
 		VideoPos: 0,
 		VideoID:  "",
 		Leader:   creator,
