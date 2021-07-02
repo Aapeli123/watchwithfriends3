@@ -27,7 +27,7 @@ func Start(options Options) {
 
 	r := gin.Default()
 	c := cors.New(cors.Config{
-		AllowOrigins:     []string{"http://localhost:3000", "https://watchwithfriends.tk"},
+		AllowOrigins:     []string{"http://localhost:3000", "https://watchwithfriends.tk", "https://*.watchwithfriends.tk"},
 		AllowFiles:       false,
 		AllowWebSockets:  true,
 		AllowMethods:     []string{"GET"},
